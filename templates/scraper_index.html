@@ -1527,18 +1527,20 @@ function renderCompareCharts(fundsData) {
   var canvas = document.getElementById('compare-nav-chart');
   if (!canvas) return;
 
-  // Use the first fund's benchmark_chart directly (avoids __benchmark__ entry dependency)
+  // Exclude __benchmark__ entry from compareFunds (it would duplicate the benchmark line)
+  var fundSlugs = slugs.filter(function(s){return s!=='__benchmark__';});
+  var compareFunds = fundSlugs.map(function(s){return fundsData[s];});
+
+  // Use the first fund's benchmark_chart directly
   var bmChart = null, bmName = null;
-  for (var si = 0; si < slugs.length; si++) {
-    var fd = fundsData[slugs[si]];
+  for (var si = 0; si < compareFunds.length; si++) {
+    var fd = compareFunds[si];
     if (fd.benchmark_chart && fd.benchmark_chart.length >= 2 && fd.benchmark_name) {
       bmChart = fd.benchmark_chart;
       bmName = fd.benchmark_name;
       break;
     }
   }
-
-  var compareFunds = slugs.map(function(s){return fundsData[s];});
   _fundNavCache.__compare__ = { funds: compareFunds };
 
   var colors = ['#E69F00','#56B4E9','#009E73','#F0E442','#0072B2','#D55E00','#CC79A7','#FF6B6B','#845EC2','#FF9671'];
