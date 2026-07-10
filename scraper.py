@@ -48,6 +48,7 @@ _CATEGORY_PE_FILE = os.path.join(_CACHE_DIR, "category_pe_cache.json")
 _NAV_CACHE = {}  # slug -> [[date_str, nav_float], ...] sorted chronologically
 _NAV_CACHE_FILE = os.path.join(_CACHE_DIR, "nav_cache.json")
 _FUND_DATA_CACHE_FILE = os.path.join(_CACHE_DIR, "fund_data_cache.json")
+_FUND_INDEX_FILE = os.path.join(_CACHE_DIR, "fund_index.json")
 
 
 def _load_nav_cache():
@@ -655,6 +656,9 @@ def _load_fund_index():
     global _FUND_INDEX
     if _FUND_INDEX is not None:
         return _FUND_INDEX
+    _FUND_INDEX = _load_fund_index_from_disk()
+    if _FUND_INDEX is not None:
+        return _FUND_INDEX
     try:
         resp = requests.get("https://groww.in/mf-sitemap.xml", headers=HEADERS, timeout=20)
         import xml.etree.ElementTree as ET
@@ -662,7 +666,6 @@ def _load_fund_index():
         ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
         urls = root.findall(".//sm:loc", ns)
         seen = set()
-        seen_slugs = set()
         index = []
         for u in urls:
             slug_match = re.search(r"/mutual-funds/([a-z0-9-]+)", u.text or "")
@@ -673,7 +676,6 @@ def _load_fund_index():
                 continue
             seen.add(s)
             index.append({"slug": s, "name": _slug_to_name(s)})
-        # Override names for slug/naming mismatches (renamed funds)
         for entry in index:
             base = _strip_plan_suffix(entry["slug"])
             if base in _FUND_NAME_CORRECTIONS:
@@ -683,10 +685,31 @@ def _load_fund_index():
                 if cached and cached.get("data", {}).get("name"):
                     entry["name"] = cached["data"]["name"]
         _FUND_INDEX = _augment_with_plan_variants(index)
+        _save_fund_index_to_disk(_FUND_INDEX)
     except Exception as e:
         print(f"Warning: failed to load fund index: {e}")
-        _FUND_INDEX = []
+        _FUND_INDEX = _load_fund_index_from_disk() or []
     return _FUND_INDEX
+
+
+def _load_fund_index_from_disk():
+    try:
+        with open(_FUND_INDEX_FILE) as f:
+            data = json.load(f)
+        stale = data.get("ts", 0) < time_module.time() - 86400 * 7
+        if not stale and isinstance(data.get("index"), list):
+            return data["index"]
+    except Exception:
+        pass
+    return None
+
+
+def _save_fund_index_to_disk(index):
+    try:
+        with open(_FUND_INDEX_FILE, "w") as f:
+            json.dump({"ts": time_module.time(), "index": index}, f)
+    except Exception as e:
+        print(f"Warning: failed to save fund index: {e}")
 
 
 def _slug_to_name(slug):

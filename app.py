@@ -62,6 +62,7 @@ def _daily_refresh_loop():
 
 if __name__ == "__main__":
     logger.info("Starting Balaji Stocks | Mutual Funds (localhost:5050)...")
+    scraper._FUND_INDEX = scraper._load_fund_index_from_disk()
     threading.Thread(target=_daily_refresh_loop, daemon=True).start()
     threading.Timer(2, lambda: webbrowser.open('http://localhost:5050')).start()
     app.run(host="0.0.0.0", port=5050, debug=False)
