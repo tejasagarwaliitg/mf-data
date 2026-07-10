@@ -2,7 +2,11 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 
-shell.Run "cmd /c cd /d """ & scriptDir & """ && pip install -q -r requirements.txt 2>nul && python app.py", 0, False
+' Try py (Python launcher) then python
+If fso.FileExists("C:\Windows\py.exe") Then
+    cmd = "py"
+Else
+    cmd = "python"
+End If
 
-WScript.Sleep 3000
-shell.Run "http://localhost:5050"
+shell.Run "cmd /c cd /d """ & scriptDir & """ && " & cmd & " app.py", 0, False
