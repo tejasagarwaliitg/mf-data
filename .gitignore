@@ -4,7 +4,7 @@ __pycache__/
 venv/
 .venv/
 .cache/
-benchmark_cache.json
+
 stock_pe_cache.json
 .DS_Store
 *.spec

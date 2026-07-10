@@ -2203,7 +2203,7 @@ def fetch_fund_data(slug):
         return local_pe
 
     def _do_pb():
-        return _compute_weighted_pb(holdings_raw, fetch_timeout=30 if _IS_PREWARM else 10)
+        return _compute_weighted_pb(holdings_raw, fetch_timeout=30 if _IS_PREWARM else 5)
 
     def _do_benchmark():
         if not benchmark_name:
