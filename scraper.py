@@ -785,15 +785,25 @@ def _get_stock_pe_from_yfinance(symbol=None, company_name=None):
 
     try:
         import yfinance as yf
+        import requests
     except ImportError:
         return None
+
+    # ponytail: set 3s timeout on yfinance HTTP requests to avoid hanging on 404s
+    class _TimeoutAdapter(requests.adapters.HTTPAdapter):
+        def send(self, *args, **kwargs):
+            kwargs["timeout"] = 3
+            return super().send(*args, **kwargs)
+    _timeout_session = requests.Session()
+    _timeout_session.mount("https://", _TimeoutAdapter())
+    _timeout_session.mount("http://", _TimeoutAdapter())
 
     def _is_valid_equity(info):
         return info and info.get("quoteType") == "EQUITY"
 
     def _try_ticker(t):
         try:
-            ti = yf.Ticker(t)
+            ti = yf.Ticker(t, session=_timeout_session)
             info = ti.info
             if _is_valid_equity(info):
                 pe = info.get("trailingPE") or info.get("forwardPE")
@@ -807,10 +817,8 @@ def _get_stock_pe_from_yfinance(symbol=None, company_name=None):
 
     def _store(t, company):
         pe, pb, mcap = _try_ticker(t)
-        if pe is not None:
-            _STOCK_PE_CACHE[company] = {"pe": pe, "pb": pb, "mcap": mcap, "ts": datetime.now().isoformat(timespec="seconds")}
-            return pe
-        return None
+        _STOCK_PE_CACHE[company] = {"pe": pe if pe is not None else None, "pb": pb, "mcap": mcap, "ts": datetime.now().isoformat(timespec="seconds")}
+        return pe
 
     seen = set()
     company = company_name or symbol or ""
@@ -898,14 +906,17 @@ def _compute_weighted_pe(holdings):
     pe_map = {}
     for name in company_names:
         cached = _lookup_pe_cache(name)
-        if cached is not None and cached.get("pe") is not None and not _is_cache_stale(cached):
-            pe_map[name] = cached["pe"]
+        if cached is not None:
+            if cached.get("pe") is not None and not _is_cache_stale(cached):
+                pe_map[name] = cached["pe"]
+            # ponytail: skip stocks that already failed (None PE) to avoid retrying 404s
+            continue
 
     _ALLOW_NETWORK = _PE_ALLOW_NETWORK or not ON_RENDER
     if any(name not in pe_map for name in company_names):
         if _ALLOW_NETWORK:
             from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
-            uncached = [n for n in company_names if n not in pe_map]
+            uncached = [n for n in company_names if n not in pe_map and _lookup_pe_cache(n) is None]
             pe_timeout = None if _IS_PREWARM else 12
             with ThreadPoolExecutor(max_workers=15) as ex:
                 fut_to_name = {ex.submit(_get_stock_pe_screener, n, True): n for n in uncached}
@@ -2148,7 +2159,7 @@ def fetch_fund_data(slug):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=(6, 8))
     except Exception:
-        return None
+        return cached["data"] if cached else None
     if resp.status_code != 200:
         # Try swapped plan suffix (some plan variants don't exist on Groww)
         for suffix, replacement in _PLAN_SWAP.items():
@@ -2163,7 +2174,7 @@ def fetch_fund_data(slug):
                 except Exception:
                     continue
         if resp.status_code != 200:
-            return None
+            return cached["data"] if cached else None
     data = _extract_next_data(resp.text)
     if not data:
         return None
@@ -2179,6 +2190,11 @@ def fetch_fund_data(slug):
     metrics = {}
 
     holdings_raw = scheme_data.get("holdings", [])
+    portfolio_date = None
+    if holdings_raw:
+        pd = holdings_raw[0].get("portfolio_date")
+        if pd:
+            portfolio_date = pd.replace("T", " ").replace("Z", "").split(".")[0]
     holdings = [
         {
             "company": h.get("company_name"),
@@ -2292,6 +2308,8 @@ def fetch_fund_data(slug):
         "category_pe": category_pe,
         "launch_date": scheme_data.get("launch_date"),
         "holdings": holdings,
+        "portfolio_date": portfolio_date,
+        "nav_date": scheme_data.get("nav_date"),
         "source": "groww",
     }
 
@@ -2623,40 +2641,76 @@ def fetch_funds_compare(slugs):
     return ordered
 
 
-def compute_overlap_matrix(funds_data):
-    """Compute NxN holdings overlap matrix as percentage.
+# ponytail: non-stock patterns for portfolio overlap filtering
+_NON_STOCK_PATTERNS = (
+    "repo", "reverse repo", "cblo", "treps", "cash margin", "net payables",
+    "net receivables", "net current assets", "cash and cash equivalent",
+    "others cblo", "future",
+)
 
-    For each pair of funds, overlap = sum of min(alloc_a, alloc_b)
-    for all common stocks. Returns {slug: {slug: float}}.
+
+def _is_stock_holding(name):
+    if not name:
+        return False
+    name_lower = name.lower().strip()
+    if name_lower.endswith(" future") or name_lower.endswith(" futures"):
+        return False
+    for pat in _NON_STOCK_PATTERNS:
+        if pat in name_lower:
+            return False
+    return True
+
+
+def compute_overlap_matrix(funds_data):
+    """Compute portfolio overlap metrics between all fund pairs.
+
+    Returns two matrices:
+      overlap (Sum-of-Minimums %): sum(min(a%, b%)) for common stocks,
+        measuring what fraction of A's portfolio is also in B (and vice versa).
+      overlap_combined (Combined Pool %): sum(min) / (total_A + total_B) * 100,
+        measuring common holdings as a fraction of the combined pool (advisorkhoj style).
+
+    Non-stock items (Repo, Cash, CBLO, Futures, etc.) are excluded.
     """
     slugs = list(funds_data.keys())
     holdings_map = {}
+    totals_map = {}
     for slug in slugs:
         fund = funds_data[slug]
         holdings = {}
+        total = 0.0
         for h in fund.get("holdings", []):
             name = h.get("company")
             pct = h.get("percent")
-            if name and pct is not None:
-                holdings[name] = float(pct)
+            if name and pct is not None and _is_stock_holding(name):
+                pct_f = float(pct)
+                holdings[name] = pct_f
+                total += pct_f
         holdings_map[slug] = holdings
+        totals_map[slug] = total
 
-    matrix = {}
+    overlap = {}
+    overlap_combined = {}
     for s1 in slugs:
-        matrix[s1] = {}
+        overlap[s1] = {}
+        overlap_combined[s1] = {}
         for s2 in slugs:
             if s1 == s2:
-                matrix[s1][s2] = 100.0
+                overlap[s1][s2] = 100.0
+                overlap_combined[s1][s2] = 100.0
                 continue
             h1 = holdings_map.get(s1, {})
             h2 = holdings_map.get(s2, {})
             common = set(h1.keys()) & set(h2.keys())
             if not common:
-                matrix[s1][s2] = 0.0
+                overlap[s1][s2] = 0.0
+                overlap_combined[s1][s2] = 0.0
                 continue
-            overlap = sum(min(h1[c], h2[c]) for c in common)
-            matrix[s1][s2] = round(overlap, 2)
-    return matrix
+            s = sum(min(h1[c], h2[c]) for c in common)
+            overlap[s1][s2] = round(s, 2)
+            total = totals_map.get(s1, 0) + totals_map.get(s2, 0)
+            overlap_combined[s1][s2] = round(s / total * 100, 2) if total else 0.0
+    return overlap, overlap_combined
 
 
 def compute_jaccard_matrix(funds_data):

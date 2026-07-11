@@ -306,7 +306,7 @@ tr:last-child td{border-bottom:none}
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 // ── Helpers ──
-function _n(v, d) { return v != null && isFinite(v) ? Number(v).toFixed(d) : '-'; }
+function _n(v, d) { try { return v != null && isFinite(v) ? Number(v).toFixed(d) : '-'; } catch(e) { return '-'; } }
 
 // ── State ──
 let tabs = [];
@@ -949,28 +949,47 @@ function toggleCompare() {
 
 function updateCompareBadge() { compareBadge.textContent = compareSel.size; compareToggle.classList.toggle('active', compareMode); }
 
+var _NON_STOCK_PATS = ['repo','reverse repo','cblo','treps','cash margin','net payables','net receivables','net current assets','cash and cash equivalent','others cblo','future'];
+
+function _isStock(name) {
+  if (!name) return false;
+  var n = name.toLowerCase().trim();
+  if (n.endsWith(' future') || n.endsWith(' futures')) return false;
+  for (var i=0;i<_NON_STOCK_PATS.length;i++) {
+    if (n.indexOf(_NON_STOCK_PATS[i])!==-1) return false;
+  }
+  return true;
+}
+
 function _clientOverlap(fundsData) {
   var slugs = Object.keys(fundsData);
-  var hm = {};
+  var hm = {}, totals = {};
   slugs.forEach(function(s) {
-    var h = {};
+    var h = {}; var t = 0;
     (fundsData[s].holdings||[]).forEach(function(x) {
-      if (x.company && x.percent!=null) h[x.company] = x.percent;
+      if (x.company && x.percent!=null && _isStock(x.company)) {
+        var p = parseFloat(x.percent);
+        h[x.company] = p;
+        t += p;
+      }
     });
-    hm[s] = h;
+    hm[s] = h; totals[s] = t;
   });
-  var m = {};
+  var overlap = {}, overlapCombined = {};
   slugs.forEach(function(s1) {
-    m[s1] = {};
+    overlap[s1] = {}; overlapCombined[s1] = {};
     slugs.forEach(function(s2) {
-      if (s1===s2) { m[s1][s2]=100.0; return; }
+      if (s1===s2) { overlap[s1][s2]=100.0; overlapCombined[s1][s2]=100.0; return; }
       var h1=hm[s1]||{}, h2=hm[s2]||{};
       var common=Object.keys(h1).filter(function(k){return k in h2;});
-      if (!common.length) { m[s1][s2]=0.0; return; }
-      m[s1][s2]=Math.round(common.reduce(function(s,k){return s+Math.min(h1[k],h2[k]);},0)*100)/100;
+      if (!common.length) { overlap[s1][s2]=0.0; overlapCombined[s1][s2]=0.0; return; }
+      var s = common.reduce(function(acc,k){return acc+Math.min(h1[k],h2[k]);},0);
+      overlap[s1][s2]=Math.round(s*100)/100;
+      var total = (totals[s1]||0)+(totals[s2]||0);
+      overlapCombined[s1][s2]=total>0?Math.round(s/total*10000)/100:0;
     });
   });
-  return m;
+  return {overlap: overlap, overlap_combined: overlapCombined};
 }
 
 function _clientJaccard(fundsData) {
@@ -1075,12 +1094,12 @@ async function showCompareView() {
         bmSlug = '__benchmark__';
       }
     });
-    var clOverlap = _clientOverlap(fd);
+    var clOverlapObj = _clientOverlap(fd);
     var clJaccard = _clientJaccard(fd);
     var clCorr = {1:_clientCorrelation(fd,1), 3:_clientCorrelation(fd,3), 5:_clientCorrelation(fd,5)};
     window.__cmpFunds = fd;
     window.__cmpCorr = clCorr;
-    mainEl.innerHTML = renderCompareView(selected, fd, clOverlap, clJaccard, clCorr);
+    mainEl.innerHTML = renderCompareView(selected, fd, clOverlapObj.overlap, clOverlapObj.overlap_combined, clJaccard, clCorr);
     renderCompareCharts(fd);
     _wireCompareColors();
     return;
@@ -1095,7 +1114,7 @@ async function showCompareView() {
     var apiCorr = {1:d.correlation_1y, 3:d.correlation_3y, 5:d.correlation_5y};
     window.__cmpFunds = d.funds;
     window.__cmpCorr = apiCorr;
-    mainEl.innerHTML = renderCompareView(selected, d.funds, d.overlap, d.jaccard, apiCorr);
+    mainEl.innerHTML = renderCompareView(selected, d.funds, d.overlap, d.overlap_combined, d.jaccard, apiCorr);
     renderCompareCharts(d.funds);
     _wireCompareColors();
   } catch(e) { mainEl.innerHTML = '<div class="card" style="text-align:center;padding:30px;"><p style="color:var(--neg);font-size:13px;">Compare failed: ' + escHtml(e.message) + '</p></div>'; }
@@ -1234,7 +1253,7 @@ function _buildNavChart(canvas, datasets, labels) {
               var raw = it.dataset._rawNav ? it.dataset._rawNav[it.dataIndex] : null;
               var color = it.dataset.borderColor || '#C89A3C';
               html += '<div style="display:flex;align-items:center;gap:4px;padding:1px 0;"><span style="color:' + color + ';font-size:14px;line-height:1;">●</span><span style="flex:1;">' + label + '</span>';
-              if (raw !== null) html += '<span style="color:#64748b;margin:0 3px;">₹' + raw.toFixed(2) + '</span>';
+              if (raw != null && isFinite(raw)) html += '<span style="color:#64748b;margin:0 3px;">₹' + Number(raw).toFixed(2) + '</span>';
               html += '<span style="color:' + (it.parsed.y >= 0 ? '#34d399' : '#f87171') + ';font-weight:600;">' + pct + '</span></div>';
             }
             el.innerHTML = html;
@@ -1777,7 +1796,7 @@ function _corrCls(s1,s2,v) {
   return 'on';
 }
 
-function renderCompareView(selected, fundsData, overlap, jaccard, correlation) {
+function renderCompareView(selected, fundsData, overlap, overlapCombined, jaccard, correlation) {
   var bmSlug = fundsData['__benchmark__'] ? '__benchmark__' : null;
   var slugs = Object.keys(fundsData).filter(function(s){return s!==bmSlug;});
   if (bmSlug) slugs.push(bmSlug);
@@ -1828,6 +1847,7 @@ function renderCompareView(selected, fundsData, overlap, jaccard, correlation) {
     ['Launch', slugs.map(function(s){return fundsData[s].launch_date||'-';})],
     ['Info Ratio', slugs.map(function(s){return _n(fundsData[s].information_ratio, 2);})],
     ['Tenure', slugs.map(function(s){var v=fundsData[s].manager_avg_tenure_days;if(!v)return'-';var y=Math.floor(v/365);return y+'y '+Math.round((v%365)/30)+'m';})],
+    ['Portfolio', slugs.map(function(s){var pd=fundsData[s].portfolio_date;return pd?pd.slice(0,10):fundsData[s].nav_date||'-';})],
     ['Holdings', slugs.map(function(s){return (fundsData[s].holdings||[]).length;})],
   ];
   var ovHtml = '<div style="overflow-x:auto;"><table><thead><tr><th style="min-width:90px;font-size:9px;">Metric</th>' + thCells() + '</tr></thead><tbody>';
@@ -1875,7 +1895,7 @@ function renderCompareView(selected, fundsData, overlap, jaccard, correlation) {
   perfHtml += '</tbody></table></div>';
 
   var matrixSlugs = slugs.filter(function(s){return s!==bmSlug;});
-  var matrixHtml = '';
+  var matrixHtml = '', matrixCombinedHtml = '';
   if (overlap && matrixSlugs.length>1) {
     matrixHtml = '<div class="matrix-wrap"><table class="matrix-table"><thead><tr><th class="corner"></th>';
     matrixSlugs.forEach(function(s){matrixHtml+='<th>'+escHtml((fundsData[s].name||s).slice(0,10))+'</th>';});
@@ -1894,9 +1914,63 @@ function renderCompareView(selected, fundsData, overlap, jaccard, correlation) {
       matrixHtml += '</tr>';
     });
     matrixHtml += '</tbody></table></div>';
+    matrixCombinedHtml = '<div class="matrix-wrap"><table class="matrix-table"><thead><tr><th class="corner"></th>';
+    matrixSlugs.forEach(function(s){matrixCombinedHtml+='<th>'+escHtml((fundsData[s].name||s).slice(0,10))+'</th>';});
+    matrixCombinedHtml += '</tr></thead><tbody>';
+    matrixSlugs.forEach(function(s1) {
+      matrixCombinedHtml += '<tr><th>'+escHtml((fundsData[s1].name||s1).slice(0,10))+'</th>';
+      matrixSlugs.forEach(function(s2) {
+        var v = overlapCombined && overlapCombined[s1] && overlapCombined[s1][s2]!==undefined ? overlapCombined[s1][s2] : 0;
+        var cls = 'cell on';
+        if (s1===s2) cls='cell os';
+        else if (v>=25) cls='cell oh';
+        else if (v>=12) cls='cell om';
+        else if (v>0) cls='cell ol';
+        matrixCombinedHtml += '<td class="'+cls+'">'+v.toFixed(0)+'%</td>';
+      });
+      matrixCombinedHtml += '</tr>';
+    });
+    matrixCombinedHtml += '</tbody></table></div>';
   }
 
   var jaccardHtml = overlap && matrixSlugs.length>1 ? _renderMatrixTable(jaccard, matrixSlugs, fundsData, _jaccardCls) : '';
+
+  var overlapDetailHtml = '';
+  if (matrixSlugs.length === 2) {
+    var sa = matrixSlugs[0], sb = matrixSlugs[1];
+    var ha = {}, hb = {};
+    (fundsData[sa].holdings||[]).forEach(function(x) {
+      if (x.company && x.percent!=null && _isStock(x.company)) ha[x.company] = parseFloat(x.percent);
+    });
+    (fundsData[sb].holdings||[]).forEach(function(x) {
+      if (x.company && x.percent!=null && _isStock(x.company)) hb[x.company] = parseFloat(x.percent);
+    });
+    var common = Object.keys(ha).filter(function(k){return k in hb;}).sort(function(a,b){
+      return Math.min(hb[b],ha[b]) - Math.min(hb[a],ha[a]);
+    });
+    if (common.length) {
+      var rows = '', sumMin = 0;
+      common.forEach(function(stock) {
+        var aPct = ha[stock], bPct = hb[stock], mn = Math.min(aPct, bPct);
+        sumMin += mn;
+        rows += '<tr><td style="font-weight:500;">'+escHtml(stock)+'</td>' +
+          '<td style="text-align:right;">'+aPct.toFixed(2)+'%</td>' +
+          '<td style="text-align:right;">'+bPct.toFixed(2)+'%</td>' +
+          '<td style="text-align:right;font-weight:600;color:var(--primary);">'+mn.toFixed(2)+'%</td></tr>';
+      });
+      var overlapVal = overlap[sa] && overlap[sa][sb] !== undefined ? overlap[sa][sb] : 0;
+      overlapDetailHtml =
+        '<details style="margin-top:10px;"><summary style="cursor:pointer;font-weight:600;font-size:11px;color:var(--primary);padding:6px 0;">Common Stocks Breakdown ('+common.length+' stocks, overlap: '+overlapVal.toFixed(1)+'%) <span style="font-weight:400;color:var(--text-dim);font-size:10px;">click to expand</span></summary>' +
+        '<div style="overflow-x:auto;margin-top:8px;"><table style="width:100%;border-collapse:collapse;font-size:11px;"><thead>' +
+        '<tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border-subtle);">Stock</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border-subtle);">'+escHtml((fundsData[sa].name||sa).slice(0,16))+'</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border-subtle);">'+escHtml((fundsData[sb].name||sb).slice(0,16))+'</th>' +
+        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border-subtle);color:var(--primary);">Min</th></tr></thead><tbody>' +
+        rows +
+        '<tr style="border-top:2px solid var(--primary);font-weight:700;"><td>Overlap</td><td></td><td></td><td style="text-align:right;color:var(--primary);font-size:13px;">'+sumMin.toFixed(2)+'%</td></tr>' +
+        '</tbody></table></div></details>';
+    }
+  }
 
   var corrYears = 3;
   var corrData = correlation ? correlation[corrYears] : null;
@@ -1931,7 +2005,9 @@ function renderCompareView(selected, fundsData, overlap, jaccard, correlation) {
     '<div class="card"><h2 style="display:flex;align-items:center;gap:8px;">NAV Comparison <span style="font-size:9px;color:var(--text-dim);">% change from start</span><button onclick="_toggleNavFS(null)" style="margin-left:auto;background:none;border:1px solid var(--border-subtle);color:var(--primary);cursor:pointer;padding:2px 6px;border-radius:4px;line-height:1;display:flex;align-items:center;transition:var(--transition);" title="Full screen" onmouseover="this.style.borderColor=\'var(--primary)\';this.style.background=\'rgba(200,154,60,0.06)\'" onmouseout="this.style.borderColor=\'\';this.style.background=\'none\'"><span class="material-symbols-outlined" style="font-size:14px;">open_in_full</span></button></h2><div id="compare-period-toggle" style="display:flex;gap:2px;margin-bottom:4px;flex-wrap:wrap;">' +
       ['1M','3M','6M','1Y','2Y','3Y','5Y','10Y','ALL'].map(function(p){return '<button class="nav-period-btn-cmp" data-period="'+p+'" style="background:var(--bg-elevated);border:1px solid var(--border-subtle);color:var(--text-muted);padding:1px 7px;border-radius:3px;font-size:9px;cursor:pointer;">'+p+'</button>';}).join('') +
     '</div><div style="position:relative;"><canvas id="compare-nav-chart" style="max-height:200px;"></canvas></div><div id="nav-navigator-wrapper-compare" class="nav-navigator-wrap"><canvas id="nav-navigator-compare"></canvas><div id="nav-navigator-overlay-compare" class="nav-navigator-overlay"></div></div></div>' +
-    (matrixSlugs.length>1?'<div class="card"><h2>Holdings Overlap <span class="badge">N×N</span></h2>'+matrixHtml+'<p style="font-size:10px;color:var(--text-dim);margin-top:10px;text-align:center;">Overlap = sum of min(w<sub>A</sub>, w<sub>B</sub>) for common stocks</p></div>':'') +
+    (matrixSlugs.length>1?'<div class="card"><h2>Holdings Overlap — Sum of Minimums <span class="badge">N×N</span></h2>'+matrixHtml+'<p style="font-size:10px;color:var(--text-dim);margin-top:10px;text-align:center;">sum of min(w<sub>A</sub>, w<sub>B</sub>) for common stocks (non-stock items excluded)</p></div>':'') +
+    (matrixSlugs.length>1?'<div class="card"><h2>Holdings Overlap — Combined Pool <span class="badge">N×N</span></h2>'+matrixCombinedHtml+'<p style="font-size:10px;color:var(--text-dim);margin-top:10px;text-align:center;">sum(min) / (total<sub>A</sub> + total<sub>B</sub>) &times; 100 — overlap as fraction of combined portfolio (advisorkhoj style)</p></div>':'') +
+    (matrixSlugs.length===2 && overlapDetailHtml ? '<div class="card"><h2>Common Stocks Breakdown</h2>'+overlapDetailHtml+'</div>':'') +
     (matrixSlugs.length>1?'<div class="card"><h2>Holdings Overlap — Jaccard <span class="badge">N×N</span></h2>'+jaccardHtml+'<p style="font-size:10px;color:var(--text-dim);margin-top:10px;text-align:center;">Jaccard = (common stocks) / (total unique stocks)</p></div>':'') +
     (matrixSlugs.length>1?'<div class="card" id="corr-card"><h2 style="display:flex;align-items:center;gap:8px;">Return Correlation <span class="badge">N×N</span></h2>'+corrHtml+'<p style="font-size:10px;color:var(--text-dim);margin-top:10px;text-align:center;">Pearson correlation of daily returns</p></div>':'') +
     '<div class="card"><h2>Holdings Breakdown</h2><div class="holdings-grid">'+hgridHtml+'</div></div>';

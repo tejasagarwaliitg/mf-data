@@ -9,7 +9,6 @@ def refresh_scraper_caches():
     old_fund_slugs = list(scraper._FUND_DATA_CACHE.keys())
     nav_slugs = list(scraper._NAV_CACHE.keys())
     _BM_CACHE.clear()
-    scraper._FUND_DATA_CACHE.clear()
     scraper._PE_CACHE.clear()
     scraper._FUND_INDEX = None
 
@@ -96,7 +95,7 @@ def api_compare():
         return jsonify({"error": "Select at least 2 funds"}), 400
     try:
         funds = scraper.fetch_funds_compare(slugs)
-        overlap = scraper.compute_overlap_matrix(funds)
+        overlap, overlap_combined = scraper.compute_overlap_matrix(funds)
         jaccard = scraper.compute_jaccard_matrix(funds)
         correlation_1y = scraper.compute_correlation_matrix(funds, 1)
         correlation_3y = scraper.compute_correlation_matrix(funds, 3)
@@ -109,6 +108,6 @@ def api_compare():
                 bm_entry = {"name": benchmark_name, "slug": "__benchmark__", "plan": "Index", "category": benchmark_name, "nav": None, "aum": None, "expense_ratio": None, "pe_ratio": None, "pb_ratio": None, "launch_date": None, "holdings": [], "source": "yfinance"}
                 bm_entry.update(bm_metrics)
                 funds["__benchmark__"] = bm_entry
-        return jsonify({"funds": funds, "overlap": overlap, "jaccard": jaccard, "correlation_1y": correlation_1y, "correlation_3y": correlation_3y, "correlation_5y": correlation_5y})
+        return jsonify({"funds": funds, "overlap": overlap, "overlap_combined": overlap_combined, "jaccard": jaccard, "correlation_1y": correlation_1y, "correlation_3y": correlation_3y, "correlation_5y": correlation_5y})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
