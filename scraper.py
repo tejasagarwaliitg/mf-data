@@ -956,8 +956,7 @@ def _compute_weighted_pe(holdings):
                     except TimeoutError:
                         pass
 
-            if _IS_PREWARM:
-                # Fallback to Groww for stocks missing from screener
+            # Fallback to Groww for stocks still missing P/E
                 groww_fallback = []
                 for name in uncached:
                     if pe_map.get(name) is None and any(
