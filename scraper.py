@@ -1938,6 +1938,15 @@ def _fetch_benchmark_daily(benchmark_name):
         if days_stale <= 2:
             return nav_data
         cache_recent = True
+    elif not nav_data:
+        # ponytail: try ANY cached benchmark (all use ^NSEI anyway)
+        nav_data = _load_any_benchmark_cache()
+        if nav_data and len(nav_data) > 60:
+            last_date = nav_data[-1][0]
+            days_stale = (datetime.now() - last_date).days
+            if days_stale <= 2:
+                return nav_data
+            cache_recent = True
     sym = _BENCHMARK_DISPLAY_SYMBOLS.get(benchmark_name)
     if not sym:
         return nav_data if cache_recent else None
@@ -1973,6 +1982,23 @@ def _load_benchmark_cache(benchmark_name):
                 raw = data.get(benchmark_name)
                 if raw:
                     return [(datetime.fromisoformat(p[0]), float(p[1])) for p in raw]
+        except Exception:
+            pass
+    return None
+
+def _load_any_benchmark_cache():
+    """Load the first available benchmark data from cache (any name), for fallback."""
+    for fpath in (_BENCHMARK_CACHE_FILE, _BENCHMARK_BUNDLED_FILE):
+        try:
+            if os.path.exists(fpath):
+                with open(fpath) as f:
+                    data = json.load(f)
+                for raw in data.values():
+                    if raw and len(raw) > 60:
+                        try:
+                            return [(datetime.fromisoformat(p[0]), float(p[1])) for p in raw]
+                        except Exception:
+                            continue
         except Exception:
             pass
     return None
