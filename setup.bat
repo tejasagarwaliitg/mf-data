@@ -30,11 +30,7 @@ echo ========================================
 echo  SETUP COMPLETE!
 echo ========================================
 echo.
-echo To start the app:
-echo   - Double-click start.bat (shows window)
-echo   - Double-click start.vbs (no window)
-echo.
-echo Browser opens at http://localhost:5050
-echo Close the terminal to stop the server.
-echo.
-pause
+echo Starting app...
+start "" "%~dp0start.bat"
+timeout /t 3 >nul
+exit
