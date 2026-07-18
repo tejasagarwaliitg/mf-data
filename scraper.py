@@ -789,21 +789,25 @@ def _get_stock_pe_from_yfinance(symbol=None, company_name=None):
     except ImportError:
         return None
 
-    # ponytail: set 3s timeout on yfinance HTTP requests to avoid hanging on 404s
+    # ponytail: set 3s timeout on yfinance's shared session
     class _TimeoutAdapter(requests.adapters.HTTPAdapter):
-        def send(self, *args, **kwargs):
-            kwargs["timeout"] = 3
-            return super().send(*args, **kwargs)
-    _timeout_session = requests.Session()
-    _timeout_session.mount("https://", _TimeoutAdapter())
-    _timeout_session.mount("http://", _TimeoutAdapter())
+        def send(self, req, **kw):
+            kw.setdefault("timeout", 3 if not _IS_PREWARM else None)
+            return super().send(req, **kw)
+    try:
+        _dummy = yf.Ticker("RELIANCE.NS")
+        _session = _dummy.session
+        _session.mount("https://", _TimeoutAdapter())
+        _session.mount("http://", _TimeoutAdapter())
+    except Exception:
+        pass
 
     def _is_valid_equity(info):
         return info and info.get("quoteType") == "EQUITY"
 
     def _try_ticker(t):
         try:
-            ti = yf.Ticker(t, session=_timeout_session)
+            ti = yf.Ticker(t)
             info = ti.info
             if _is_valid_equity(info):
                 pe = info.get("trailingPE") or info.get("forwardPE")
@@ -2218,15 +2222,20 @@ def fetch_fund_data(slug):
         local_nav_data = nav_data
         if local_nav_data is None or len(local_nav_data) <= 30:
             cached_nav = _NAV_CACHE.get(slug)
+            nav_stale = True
             if cached_nav and len(cached_nav) > 30:
                 local_nav_data = _nav_cache_to_nav_data(cached_nav)
-            elif ON_HF or not ON_VERCEL:
+                last_date = local_nav_data[-1][0] if local_nav_data else None
+                nav_stale = last_date is None or (datetime.now() - last_date).days > 2
+            if nav_stale and (ON_HF or not ON_VERCEL):
                 try:
                     scheme_code = _search_mfapi(fund_name, plan_type)
+
                     if scheme_code:
-                        local_nav_data = _fetch_nav_history(scheme_code)
-                        if local_nav_data and len(local_nav_data) > 30:
-                            _merge_nav_into_cache(slug, local_nav_data)
+                        fresh_nav = _fetch_nav_history(scheme_code)
+                        if fresh_nav and len(fresh_nav) > 30:
+                            _merge_nav_into_cache(slug, fresh_nav)
+                            local_nav_data = fresh_nav
                 except Exception:
                     pass
         if local_nav_data and len(local_nav_data) > 30:
