@@ -1,4 +1,4 @@
-import os, time, logging, threading, webbrowser
+import os, sys, time, logging, threading, webbrowser
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import numpy as np
@@ -60,9 +60,60 @@ def _daily_refresh_loop():
         except Exception as e:
             logger.error("Scheduled refresh error: %s", e)
 
+def _windows_startup_install():
+    if sys.platform != "win32":
+        print("Windows only. On macOS, add to Login Items in System Settings.")
+        return
+    import shutil
+    startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+    if not os.path.isdir(startup):
+        print("Startup folder not found:", startup)
+        return
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start.bat")
+    shutil.copy2(src, os.path.join(startup, "Balaji MF.bat"))
+    print("Installed to Windows Startup. Balaji MF will start on boot.")
+
+
+def _windows_startup_remove():
+    if sys.platform != "win32":
+        return
+    startup = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+    dst = os.path.join(startup, "Balaji MF.bat")
+    try:
+        os.remove(dst)
+        print("Removed from Windows Startup")
+    except FileNotFoundError:
+        print("Not installed in Startup")
+
+
+def _startup_cache_check():
+    """If cached fund data is from a previous trading day, refresh now."""
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return  # weekend, skip
+    any_stale = False
+    for slug, entry in list(scraper._FUND_DATA_CACHE.items()):
+        ts = entry.get("ts", 0)
+        cached_dt = datetime.fromtimestamp(ts)
+        if cached_dt.date() != now.date():
+            any_stale = True
+            break
+    if any_stale:
+        logger.info("Stale cache detected from %s, refreshing...", cached_dt.date())
+        threading.Thread(target=prewarm_cache, daemon=True).start()
+
+
 if __name__ == "__main__":
+    if "--install-startup" in sys.argv:
+        _windows_startup_install()
+        sys.exit(0)
+    if "--remove-startup" in sys.argv:
+        _windows_startup_remove()
+        sys.exit(0)
     logger.info("Starting Balaji Stocks | Mutual Funds (localhost:5050)...")
     scraper._FUND_INDEX = scraper._load_fund_index_from_disk()
+    _startup_cache_check()
     threading.Thread(target=_daily_refresh_loop, daemon=True).start()
-    threading.Timer(2, lambda: webbrowser.open('http://localhost:5050')).start()
+    if "--startup" not in sys.argv:
+        threading.Timer(2, lambda: webbrowser.open('http://localhost:5050')).start()
     app.run(host="0.0.0.0", port=5050, debug=False)
